@@ -29,8 +29,17 @@ mcu_regex_to_cflags_dict = {
     'STM32(F|L)7': '-mthumb -mcpu=cortex-m7 -mfpu=fpv4-sp-d16 -mfloat-abi=hard',
 }
 
+
+def make_path(path):
+    parent_path = re.findall('PARENT-(\d+)-PROJECT_LOC.+', path)
+    if not parent_path or len(parent_path) != 1:
+        return path
+    parent_dir = "../" * (int(parent_path[0]) + 1)
+    path = re.sub('PARENT-(\d+)-PROJECT_LOC', parent_dir, path)
+    return path
+
+
 def main():
-    
     if len(sys.argv) != 2:
         sys.stderr.write("\nSTM32CubeMX project to Makefile V2.0\n")
         sys.stderr.write("-==================================-\n")
@@ -64,70 +73,26 @@ def main():
         sys.stderr.write("SW4STM32 project not found, use STM32CubeMX to generate a SW4STM32 project first\n")
         sys.exit(C2M_ERR_NO_PROJECT)
 
+    c_includes = []
+    c_sources = []
+    asm_sources = []
+    asm_includes = []
 
-    ctx = []
+    # parse .project
+    try:
+        tree = xml.etree.ElementTree.parse(ac6_project_path)
+    except Exception as e:
+        sys.stderr.write("Unable to parse SW4STM32 .project file: {}. Error: {}\n".format(ac6_project_path, str(e)))
+        sys.exit(C2M_ERR_PROJECT_FILE)
+    root = tree.getroot()
+    linked_resources = root.findall('.//linkedResources/link/location')
+    for node in linked_resources:
+        path = make_path(node.text)
+        if path.endswith('.c'):
+            c_sources.append(path)
+        elif path.endswith('.s'):
+            asm_sources.append(path)
 
-    c_set = {}
-    c_set['source_endswith'] = '.c'
-    c_set['source_subst'] = 'C_SOURCES ='
-    c_set['inc_endswith'] = '.h'
-    c_set['inc_subst'] = 'C_INCLUDES ='
-    c_set['first'] = True
-    c_set['relpath_stored'] = ''
-    ctx.append(c_set)
-
-    asm_set = {}
-    asm_set['source_endswith'] = '.s'
-    asm_set['source_subst'] = 'ASM_SOURCES ='
-    asm_set['inc_endswith'] = '.inc'
-    asm_set['inc_subst'] = 'AS_INCLUDES ='
-    asm_set['first'] = True
-    asm_set['relpath_stored'] = ''
-    ctx.append(asm_set)
-
-    for path, dirs, files in os.walk(proj_folder_path):
-        for file in files:
-            for s in ctx:
-
-                if file.endswith(s['source_endswith']):
-                    s['source_subst'] += ' \\\n  '
-                    relpath = os.path.relpath(path,proj_folder_path)
-
-                    #Split Windows style paths into tokens
-                    #Unix style path emit a single token
-                    relpath_split = relpath.split('\\')
-                    for path_tok in relpath_split:
-                        #Last token does not have a trailing slash
-                        if path_tok == relpath_split[0]:
-                            s['source_subst'] += path_tok
-                        else:
-                            s['source_subst'] += '/' + path_tok
-                    s['source_subst'] += '/' + file
-
-                if file.endswith(s['inc_endswith']):
-                    relpath = os.path.relpath(path,proj_folder_path)
-
-                    #only include a path once
-                    if relpath != s['relpath_stored']:
-                        s['relpath_stored'] = relpath
-
-                        #If this is the first include, we already have the 'C_INCLUDES ='
-                        if s['first']:
-                            s['first'] = False
-                            s['inc_subst'] += ' -I'
-                        else:
-                            s['inc_subst'] += '\nC_INCLUDES += -I'
-
-                        #Split Windows style paths into tokens
-                        #Unix style path emit a single token
-                        relpath_split = relpath.split('\\')
-                        for path_tok in relpath_split:
-                            #Last token does not have a trailing slash
-                            if path_tok == relpath_split[0]:
-                                s['inc_subst'] += path_tok
-                            else:
-                                s['inc_subst'] += '/' + path_tok         
-                    
     # .cproject file
     try:
         tree = xml.etree.ElementTree.parse(ac6_cproject_path)
@@ -157,6 +122,12 @@ def main():
     # AS symbols
     as_defs_subst = 'AS_DEFS ='
 
+    nodes = conf.findall('.//tool[@name="MCU GCC Compiler"]/option[@valueType="includePath"]/listOptionValue')
+    for node in nodes:
+        value = node.attrib.get('value')
+        if value:
+            c_includes.append(value)
+
     # C symbols
     c_defs_subst = 'C_DEFS ='
     c_def_node_list = conf.findall('.//tool[@name="MCU GCC Compiler"]/option[@valueType="definedSymbols"]/listOptionValue')
@@ -172,10 +143,10 @@ def main():
     except Exception as e:
         sys.stderr.write("Unable to find link script. Error: {}\n".format(str(e)))
         sys.exit(C2M_ERR_PROJECT_FILE)
-    ld_script_name = os.path.basename(ld_script_path)
-    ld_script_subst = 'LDSCRIPT = {}'.format(ld_script_name)
+    #ld_script_name = os.path.basename(ld_script_path)
+    ld_script_subst = 'LDSCRIPT = {}'.format(ld_script_path)
 
-# Specs
+    # Specs
     specs_node = conf.find('.//tool[@name="MCU GCC Linker"]/option[@superClass="gnu.c.link.option.ldflags"]')
     try:
         specs = specs_node.attrib.get('value')
@@ -188,16 +159,18 @@ def main():
         TARGET = proj_name,
         MCU = cflags_subst,
         LDMCU = ld_subst,
-        C_SOURCES = c_set['source_subst'],
-        ASM_SOURCES = asm_set['source_subst'],
+        C_SOURCES = "C_SOURCES = \\\n" + "\\\n".join(c_sources),
+        ASM_SOURCES = "ASM_SOURCES = \\\n" + "\\\n".join(asm_sources),
         AS_DEFS = as_defs_subst,
-        AS_INCLUDES = asm_set['inc_subst'],
+        AS_INCLUDES = "ASM_INCLUDES = -I" + " -I".join(asm_includes),
         C_DEFS = c_defs_subst,
-        C_INCLUDES = c_set['inc_subst'],
+        C_INCLUDES = "C_INCLUDES = -I" + " -I".join(c_includes),
         LDSCRIPT = ld_script_subst,
         SPECS = specs_subst)
 
-    makefile_path = os.path.join(proj_folder_path, 'Makefile')
+    makefile_dir = proj_folder_path + '/cubemx2makefile_generated/'
+    os.mkdir(makefile_dir)
+    makefile_path = os.path.join(makefile_dir, 'Makefile')
     try:
         with open(makefile_path, 'wb') as f:
             f.write(makefile_str)
@@ -209,9 +182,6 @@ def main():
     
     sys.exit(C2M_ERR_SUCCESS)
 
-
-def fix_path(p):
-    return re.sub(r'^..(\\|/)..(\\|/)..(\\|/)', '', p.replace('\\', os.path.sep))
 
 
 if __name__ == '__main__':

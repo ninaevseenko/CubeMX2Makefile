@@ -19,7 +19,7 @@ OPT = -O0
 # pathes
 #######################################
 # Build path
-BUILD_DIR = build
+BUILD_DIR = Debug
 
 ######################################
 # source
@@ -72,13 +72,12 @@ all: $$(BUILD_DIR)/$$(TARGET).elf $$(BUILD_DIR)/$$(TARGET).hex $$(BUILD_DIR)/$$(
 #######################################
 # build the application
 #######################################
-# list of objects
-OBJECTS = $$(addprefix $$(BUILD_DIR)/,$$(notdir $$(C_SOURCES:.c=.o)))
-vpath %.c $$(sort $$(dir $$(C_SOURCES)))
 # list of ASM program objects
 OBJECTS += $$(addprefix $$(BUILD_DIR)/,$$(notdir $$(ASM_SOURCES:.s=.o)))
 vpath %.s $$(sort $$(dir $$(ASM_SOURCES)))
-
+# list of objects
+OBJECTS = $$(addprefix $$(BUILD_DIR)/,$$(notdir $$(C_SOURCES:.c=.o)))
+vpath %.c $$(sort $$(dir $$(C_SOURCES)))
 $$(BUILD_DIR)/%.o: %.c Makefile | $$(BUILD_DIR) 
 	$$(CC) -c $$(CFLAGS) -Wa,-a,-ad,-alms=$$(BUILD_DIR)/$$(notdir $$(<:.c=.lst)) $$< -o $$@
 
